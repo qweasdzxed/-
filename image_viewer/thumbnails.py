@@ -17,6 +17,9 @@ SUPPORTED_EXTENSIONS = {
 VIDEO_EXTENSIONS = {
     ".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv",
     ".webm", ".m4v", ".3gp", ".mpg", ".mpeg", ".ts",
+    ".vob", ".ogv", ".mts", ".m2ts", ".divx", ".xvid",
+    ".f4v", ".rm", ".rmvb", ".asf", ".m2v", ".mxf",
+    ".dv",
 }
 
 ALL_EXTENSIONS = SUPPORTED_EXTENSIONS | VIDEO_EXTENSIONS
