@@ -214,7 +214,7 @@ class VideoPlayer(QWidget):
         disp_size = self._display.size()
         scaled = pixmap.scaled(
             disp_size, Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
+            Qt.TransformationMode.FastTransformation,
         )
         self._display.setPixmap(scaled)
 
@@ -237,7 +237,7 @@ class VideoPlayer(QWidget):
         disp_size = self._display.size()
         scaled = pixmap.scaled(
             disp_size, Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
+            Qt.TransformationMode.FastTransformation,
         )
         self._display.setPixmap(scaled)
         pos_ms = int((self._current_frame / self._fps) * 1000) if self._fps > 0 else 0

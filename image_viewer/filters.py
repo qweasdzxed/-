@@ -2,8 +2,10 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton,
     QGroupBox,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QPixmap, QImage
+
+_DEBOUNCE_MS = 150
 
 
 class FilterPanel(QWidget):
@@ -17,6 +19,11 @@ class FilterPanel(QWidget):
         self._sharpness = 0.0
         self._brightness = 1.0
         self._contrast = 1.0
+
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(_DEBOUNCE_MS)
+        self._debounce.timeout.connect(self._emit_changed)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -76,6 +83,9 @@ class FilterPanel(QWidget):
         self._sharpness = self._sharp_slider.value() / 100.0
         self._brightness = self._bright_slider.value() / 100.0
         self._contrast = self._contrast_slider.value() / 100.0
+        self._debounce.start()
+
+    def _emit_changed(self):
         self.filter_changed.emit()
 
     def _reset(self):

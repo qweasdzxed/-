@@ -59,6 +59,44 @@ def list_media_in_dir(directory: str, recursive: bool = False) -> list[str]:
     ]
 
 
+def _load_thumb_pillow(path: str) -> QPixmap | None:
+    """Load thumbnail at reduced size using Pillow - much faster than full load."""
+    try:
+        from PIL import Image as PILImage
+        pil_img = PILImage.open(path)
+        pil_img.thumbnail((THUMB_SIZE, THUMB_SIZE))
+        pil_img = pil_img.convert("RGBA")
+        data = pil_img.tobytes("raw", "RGBA")
+        img = QImage(data, pil_img.width, pil_img.height, QImage.Format.Format_RGBA8888).copy()
+        return QPixmap.fromImage(img)
+    except Exception:
+        return None
+
+
+def _load_thumb_video(path: str) -> QPixmap | None:
+    """Extract first frame from video as thumbnail."""
+    try:
+        import cv2
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            return None
+        ret, frame = cap.read()
+        cap.release()
+        if not ret:
+            return None
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame.shape
+        img = QImage(frame.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+        pixmap = QPixmap.fromImage(img)
+        return pixmap.scaled(
+            THUMB_SIZE, THUMB_SIZE,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.FastTransformation,
+        )
+    except Exception:
+        return None
+
+
 class ThumbLoader(QThread):
     thumb_ready = Signal(str, QIcon)
 
@@ -67,10 +105,12 @@ class ThumbLoader(QThread):
         self._queue: list[str] = []
         self._mutex = QMutex()
         self._running = True
+        self._generation = 0
 
     def enqueue(self, paths: list[str]):
         with QMutexLocker(self._mutex):
             self._queue = list(paths)
+            self._generation += 1
 
     def stop(self):
         self._running = False
@@ -79,31 +119,37 @@ class ThumbLoader(QThread):
     def run(self):
         while self._running:
             path = None
+            gen = 0
             with QMutexLocker(self._mutex):
                 if self._queue:
                     path = self._queue.pop(0)
+                    gen = self._generation
             if path is None:
-                self.msleep(50)
+                self.msleep(30)
                 continue
-            pixmap = QPixmap(path)
-            if pixmap.isNull():
-                try:
-                    from PIL import Image as PILImage
-                    pil_img = PILImage.open(path)
-                    pil_img = pil_img.convert("RGBA")
-                    pil_img.thumbnail((THUMB_SIZE, THUMB_SIZE))
-                    data = pil_img.tobytes("raw", "RGBA")
-                    img = QImage(data, pil_img.width, pil_img.height, QImage.Format.Format_RGBA8888)
-                    pixmap = QPixmap.fromImage(img.copy())
-                except Exception:
+
+            ext = os.path.splitext(path)[1].lower()
+            pixmap = None
+
+            if ext in VIDEO_EXTENSIONS:
+                pixmap = _load_thumb_video(path)
+            else:
+                pixmap = _load_thumb_pillow(path)
+                if pixmap is None:
+                    qpx = QPixmap(path)
+                    if not qpx.isNull():
+                        pixmap = qpx.scaled(
+                            THUMB_SIZE, THUMB_SIZE,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.FastTransformation,
+                        )
+
+            with QMutexLocker(self._mutex):
+                if self._generation != gen:
                     continue
-            if not pixmap.isNull():
-                scaled = pixmap.scaled(
-                    THUMB_SIZE, THUMB_SIZE,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                self.thumb_ready.emit(path, QIcon(scaled))
+
+            if pixmap and not pixmap.isNull():
+                self.thumb_ready.emit(path, QIcon(pixmap))
 
 
 class ThumbnailPanel(QListWidget):

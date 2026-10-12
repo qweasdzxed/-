@@ -1,6 +1,57 @@
+from collections import OrderedDict
+
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
-from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QTimer
+from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QTimer, QThread, QMutex, QMutexLocker
 from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QMouseEvent, QPainter, QMovie
+
+_CACHE_MAX = 5
+
+
+class _PreloadWorker(QThread):
+    image_ready = Signal(str, QPixmap)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._queue: list[str] = []
+        self._mutex = QMutex()
+        self._running = True
+
+    def enqueue(self, paths: list[str]):
+        with QMutexLocker(self._mutex):
+            self._queue = list(paths)
+
+    def stop(self):
+        self._running = False
+        self.wait(2000)
+
+    def run(self):
+        while self._running:
+            path = None
+            with QMutexLocker(self._mutex):
+                if self._queue:
+                    path = self._queue.pop(0)
+            if path is None:
+                self.msleep(50)
+                continue
+            pixmap = self._load(path)
+            if pixmap and not pixmap.isNull():
+                self.image_ready.emit(path, pixmap)
+
+    @staticmethod
+    def _load(path: str) -> QPixmap | None:
+        img = QImage(path)
+        if img.isNull():
+            try:
+                from PIL import Image as PILImage
+                pil_img = PILImage.open(path)
+                pil_img = pil_img.convert("RGBA")
+                data = pil_img.tobytes("raw", "RGBA")
+                img = QImage(data, pil_img.width, pil_img.height, QImage.Format.Format_RGBA8888).copy()
+            except Exception:
+                return None
+        if img.isNull():
+            return None
+        return QPixmap.fromImage(img)
 
 
 class ImageCanvas(QGraphicsView):
@@ -19,6 +70,11 @@ class ImageCanvas(QGraphicsView):
         self._movie = None
         self._dragging = False
         self._drag_start = QPointF()
+
+        self._cache: OrderedDict[str, QPixmap] = OrderedDict()
+        self._preloader = _PreloadWorker(self)
+        self._preloader.image_ready.connect(self._on_preloaded)
+        self._preloader.start()
 
         self._anim_frames: list[QPixmap] = []
         self._anim_durations: list[int] = []
@@ -44,6 +100,16 @@ class ImageCanvas(QGraphicsView):
             if lower.endswith(".gif"):
                 if self._load_qmovie(path):
                     return True
+
+        cached = self._cache.get(path)
+        if cached is not None:
+            self._cache.move_to_end(path)
+            self._pixmap_item.setPixmap(cached)
+            self._scene.setSceneRect(QRectF(cached.rect()))
+            if self._fit_mode:
+                self.fit_in_view()
+            return True
+
         img = QImage(path)
         if img.isNull():
             try:
@@ -58,11 +124,28 @@ class ImageCanvas(QGraphicsView):
             except Exception:
                 return False
         pixmap = QPixmap.fromImage(img)
+        self._put_cache(path, pixmap)
         self._pixmap_item.setPixmap(pixmap)
         self._scene.setSceneRect(QRectF(pixmap.rect()))
         if self._fit_mode:
             self.fit_in_view()
         return True
+
+    def preload(self, paths: list[str]):
+        need = [p for p in paths if p not in self._cache]
+        if need:
+            self._preloader.enqueue(need)
+
+    def _on_preloaded(self, path: str, pixmap: QPixmap):
+        self._put_cache(path, pixmap)
+
+    def _put_cache(self, path: str, pixmap: QPixmap):
+        self._cache[path] = pixmap
+        while len(self._cache) > _CACHE_MAX:
+            self._cache.popitem(last=False)
+
+    def shutdown(self):
+        self._preloader.stop()
 
     def _try_load_pillow_anim(self, path: str) -> bool:
         try:

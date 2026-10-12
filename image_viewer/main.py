@@ -354,6 +354,20 @@ class MainWindow(QMainWindow):
         self._update_status()
         if self._meta_dock.isVisible():
             self._meta_panel.load_metadata(path)
+        self._preload_adjacent()
+
+    def _preload_adjacent(self):
+        if not self._image_list or self._current_index < 0:
+            return
+        to_preload = []
+        for offset in (-1, 1, -2, 2):
+            idx = self._current_index + offset
+            if 0 <= idx < len(self._image_list):
+                p = self._image_list[idx]
+                if is_image_file(p):
+                    to_preload.append(p)
+        if to_preload:
+            self._canvas.preload(to_preload)
 
     # -- Webtoon mode --
 
@@ -625,6 +639,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent):
         self._save_state()
         self._thumb_panel.shutdown()
+        self._canvas.shutdown()
         self._video.stop()
         if self._slideshow_active:
             self._slideshow_timer.stop()
