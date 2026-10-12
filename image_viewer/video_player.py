@@ -1,4 +1,5 @@
 import os
+import time
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel,
     QSizePolicy,
@@ -45,6 +46,9 @@ class VideoPlayer(QWidget):
         self._slider_held = False
         self._volume = 50
         self._muted = False
+        self._play_start_time = 0.0
+        self._play_start_frame = 0
+        self._last_disp_size = None
 
         self._display = QLabel()
         self._display.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -121,6 +125,8 @@ class VideoPlayer(QWidget):
                 return self._fallback_load(path)
             self._path = path
             self._fps = self._cap.get(cv2.CAP_PROP_FPS) or 30.0
+            if self._fps > 120:
+                self._fps = 30.0
             self._frame_count = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
             self._duration_ms = int((self._frame_count / self._fps) * 1000) if self._fps > 0 else 0
             self._current_frame = 0
@@ -128,8 +134,10 @@ class VideoPlayer(QWidget):
             self._show_frame()
             self._start_audio(path)
             self._playing = True
+            self._play_start_time = time.perf_counter()
+            self._play_start_frame = 0
             self._play_btn.setText("  ⏸  ")
-            self._timer.start(max(1, int(1000 / self._fps)))
+            self._timer.start(8)
             return True
         except ImportError:
             return self._fallback_load(path)
@@ -222,14 +230,33 @@ class VideoPlayer(QWidget):
         if not self._cap or not self._playing:
             return
         import cv2
-        ret, frame = self._cap.read()
-        if not ret:
+
+        elapsed = time.perf_counter() - self._play_start_time
+        target_frame = int(elapsed * self._fps) + self._play_start_frame
+        skip = target_frame - self._current_frame
+        if skip < 1:
+            return
+
+        frame = None
+        ret = False
+        if skip > 3:
+            self._cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            ret, frame = self._cap.read()
+            self._current_frame = target_frame
+        else:
+            for _ in range(skip):
+                ret, frame = self._cap.read()
+                if not ret:
+                    break
+                self._current_frame += 1
+
+        if not ret or frame is None:
             self._playing = False
             self._timer.stop()
             self._play_btn.setText("  ▶  ")
             self.playback_finished.emit()
             return
-        self._current_frame += 1
+
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = frame.shape
         img = QImage(frame.data, w, h, ch * w, QImage.Format.Format_RGB888)
@@ -248,17 +275,20 @@ class VideoPlayer(QWidget):
     def stop(self):
         self._timer.stop()
         self._playing = False
+        if self._audio_player:
+            self._audio_player.stop()
+            self._audio_player.setSource(QUrl())
+            self._audio_player.deleteLater()
+            self._audio_player = None
+            self._audio_output = None
         if self._cap:
             self._cap.release()
             self._cap = None
-        if self._audio_player:
-            self._audio_player.stop()
-            self._audio_player = None
-            self._audio_output = None
         if hasattr(self, "_qt_player"):
             self._qt_player.stop()
             self._qt_player.setSource(QUrl())
         self._path = None
+        self._current_frame = 0
 
     def _toggle_play(self):
         if hasattr(self, "_qt_player") and self._qt_video_widget.isVisible():
@@ -282,8 +312,10 @@ class VideoPlayer(QWidget):
                 if self._audio_player:
                     self._audio_player.setPosition(0)
             self._playing = True
+            self._play_start_time = time.perf_counter()
+            self._play_start_frame = self._current_frame
             self._play_btn.setText("  ⏸  ")
-            self._timer.start(max(1, int(1000 / self._fps)))
+            self._timer.start(8)
             if self._audio_player:
                 self._audio_player.play()
 
@@ -297,6 +329,8 @@ class VideoPlayer(QWidget):
         frame_no = int((pos_ms / 1000.0) * self._fps)
         self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
         self._current_frame = frame_no
+        self._play_start_time = time.perf_counter()
+        self._play_start_frame = frame_no
         self._show_frame()
         if self._audio_player:
             self._audio_player.setPosition(pos_ms)
