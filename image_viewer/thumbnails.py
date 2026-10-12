@@ -34,7 +34,17 @@ def is_video_file(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in VIDEO_EXTENSIONS
 
 
-def list_media_in_dir(directory: str) -> list[str]:
+def list_media_in_dir(directory: str, recursive: bool = False) -> list[str]:
+    if recursive:
+        result = []
+        try:
+            for root, _dirs, files in os.walk(directory):
+                for f in sorted(files, key=str.lower):
+                    if is_media_file(f):
+                        result.append(os.path.join(root, f))
+        except OSError:
+            pass
+        return result
     try:
         entries = sorted(os.listdir(directory), key=str.lower)
     except OSError:
