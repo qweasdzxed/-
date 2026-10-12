@@ -2,23 +2,28 @@ import sys
 import os
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QLabel, QToolBar,
-    QDockWidget, QMessageBox, QInputDialog, QSplitter, QWidget,
-    QHBoxLayout,
+    QDockWidget, QMessageBox, QInputDialog, QStackedWidget,
 )
-from PySide6.QtCore import Qt, QTimer, QSettings, QFileInfo, QSize
+from PySide6.QtCore import Qt, QTimer, QSettings, QSize
 from PySide6.QtGui import (
-    QAction, QKeySequence, QIcon, QPixmap, QPainter, QDragEnterEvent,
+    QAction, QKeySequence, QDragEnterEvent,
     QDropEvent, QCloseEvent,
 )
 from canvas import ImageCanvas
-from thumbnails import ThumbnailPanel, list_images_in_dir, is_image_file, SUPPORTED_EXTENSIONS
+from thumbnails import (
+    ThumbnailPanel, list_media_in_dir, is_media_file,
+    is_image_file, is_video_file, ALL_EXTENSIONS, SUPPORTED_EXTENSIONS, VIDEO_EXTENSIONS,
+)
+from video_player import VideoPlayer
 
 APP_NAME = "LadyViewer"
 ORG_NAME = "LadyViewer"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
-IMAGE_FILTER = "이미지 파일 ({});;모든 파일 (*)".format(
-    " ".join(f"*{ext}" for ext in sorted(SUPPORTED_EXTENSIONS))
+MEDIA_FILTER = "미디어 파일 ({exts});;이미지 ({img});;동영상 ({vid});;모든 파일 (*)".format(
+    exts=" ".join(f"*{e}" for e in sorted(ALL_EXTENSIONS)),
+    img=" ".join(f"*{e}" for e in sorted(SUPPORTED_EXTENSIONS)),
+    vid=" ".join(f"*{e}" for e in sorted(VIDEO_EXTENSIONS)),
 )
 
 
@@ -31,21 +36,20 @@ class MainWindow(QMainWindow):
         self._current_index: int = -1
         self._slideshow_active = False
         self._slideshow_interval = 3000
+        self._showing_video = False
 
         self._setup_ui()
         self._setup_menu()
         self._setup_toolbar()
-        self._setup_shortcuts()
         self._restore_state()
-
         self.setAcceptDrops(True)
 
         if initial_path and os.path.isfile(initial_path):
             self._open_file(initial_path)
         elif initial_path and os.path.isdir(initial_path):
-            images = list_images_in_dir(initial_path)
-            if images:
-                self._open_file(images[0])
+            media = list_media_in_dir(initial_path)
+            if media:
+                self._open_file(media[0])
 
     def _setup_ui(self):
         self.setWindowTitle(APP_NAME)
@@ -54,6 +58,13 @@ class MainWindow(QMainWindow):
 
         self._canvas = ImageCanvas(self)
         self._canvas.zoom_changed.connect(self._on_zoom_changed)
+
+        self._video = VideoPlayer(self)
+        self._video.playback_finished.connect(self._on_video_finished)
+
+        self._stack = QStackedWidget(self)
+        self._stack.addWidget(self._canvas)
+        self._stack.addWidget(self._video)
 
         self._thumb_panel = ThumbnailPanel(self)
         self._thumb_panel.image_selected.connect(self._open_file)
@@ -65,7 +76,7 @@ class MainWindow(QMainWindow):
         )
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._thumb_dock)
 
-        self.setCentralWidget(self._canvas)
+        self.setCentralWidget(self._stack)
 
         self._status_label = QLabel()
         self._zoom_label = QLabel()
@@ -134,10 +145,10 @@ class MainWindow(QMainWindow):
         image_menu.addAction(self._make_action("반시계 방향 회전", "Ctrl+Shift+R", self._canvas.rotate_ccw))
 
         nav_menu = self.menuBar().addMenu("탐색(&N)")
-        nav_menu.addAction(self._make_action("이전 이미지", "Left", self._prev_image))
-        nav_menu.addAction(self._make_action("다음 이미지", "Right", self._next_image))
-        nav_menu.addAction(self._make_action("첫 번째 이미지", "Home", self._first_image))
-        nav_menu.addAction(self._make_action("마지막 이미지", "End", self._last_image))
+        nav_menu.addAction(self._make_action("이전 파일", "Left", self._prev_image))
+        nav_menu.addAction(self._make_action("다음 파일", "Right", self._next_image))
+        nav_menu.addAction(self._make_action("첫 번째 파일", "Home", self._first_image))
+        nav_menu.addAction(self._make_action("마지막 파일", "End", self._last_image))
         nav_menu.addSeparator()
         self._slideshow_action = self._make_action(
             "슬라이드쇼 시작", "F5", self._toggle_slideshow
@@ -168,12 +179,9 @@ class MainWindow(QMainWindow):
         tb.addAction(self._make_action(" ▶ ", None, self._toggle_slideshow))
         self.addToolBar(tb)
 
-    def _setup_shortcuts(self):
-        pass
-
     def _on_open(self):
         start_dir = os.path.dirname(self._current_path) if self._current_path else ""
-        path, _ = QFileDialog.getOpenFileName(self, "이미지 열기", start_dir, IMAGE_FILTER)
+        path, _ = QFileDialog.getOpenFileName(self, "파일 열기", start_dir, MEDIA_FILTER)
         if path:
             self._open_file(path)
 
@@ -181,20 +189,37 @@ class MainWindow(QMainWindow):
         start_dir = os.path.dirname(self._current_path) if self._current_path else ""
         folder = QFileDialog.getExistingDirectory(self, "폴더 열기", start_dir)
         if folder:
-            images = list_images_in_dir(folder)
-            if images:
-                self._open_file(images[0])
+            media = list_media_in_dir(folder)
+            if media:
+                self._open_file(media[0])
 
     def _open_file(self, path: str):
         path = os.path.abspath(path)
         if not os.path.isfile(path):
             return
-        if not self._canvas.load_image(path):
-            self.statusBar().showMessage(f"파일을 열 수 없습니다: {os.path.basename(path)}", 3000)
+
+        if is_video_file(path):
+            self._video.stop()
+            self._video.load(path)
+            self._stack.setCurrentWidget(self._video)
+            self._showing_video = True
+            self._zoom_label.setText(" VIDEO ")
+        elif is_image_file(path) or is_media_file(path):
+            if self._showing_video:
+                self._video.stop()
+            if not self._canvas.load_image(path):
+                self.statusBar().showMessage(
+                    f"파일을 열 수 없습니다: {os.path.basename(path)}", 3000
+                )
+                return
+            self._stack.setCurrentWidget(self._canvas)
+            self._showing_video = False
+        else:
             return
+
         self._current_path = path
         directory = os.path.dirname(path)
-        new_list = list_images_in_dir(directory)
+        new_list = list_media_in_dir(directory)
         if new_list != self._image_list:
             self._image_list = new_list
             self._thumb_panel.load_directory(self._image_list)
@@ -218,10 +243,13 @@ class MainWindow(QMainWindow):
     def _update_status(self):
         if not self._current_path:
             return
-        pixmap = self._canvas.current_pixmap()
-        size_str = ""
-        if not pixmap.isNull():
-            size_str = f"{pixmap.width()} x {pixmap.height()}"
+        if not self._showing_video:
+            pixmap = self._canvas.current_pixmap()
+            size_str = ""
+            if not pixmap.isNull():
+                size_str = f"{pixmap.width()} x {pixmap.height()}"
+        else:
+            size_str = "동영상"
         try:
             file_size = os.path.getsize(self._current_path)
             if file_size < 1024:
@@ -232,12 +260,21 @@ class MainWindow(QMainWindow):
                 fs = f"{file_size / (1024 * 1024):.1f} MB"
         except OSError:
             fs = ""
-        self._status_label.setText(f"  {os.path.basename(self._current_path)}    {size_str}    {fs}")
+        self._status_label.setText(
+            f"  {os.path.basename(self._current_path)}    {size_str}    {fs}"
+        )
         if self._image_list:
-            self._index_label.setText(f" {self._current_index + 1} / {len(self._image_list)} ")
+            self._index_label.setText(
+                f" {self._current_index + 1} / {len(self._image_list)} "
+            )
 
     def _on_zoom_changed(self, zoom: float):
-        self._zoom_label.setText(f" {zoom * 100:.0f}% ")
+        if not self._showing_video:
+            self._zoom_label.setText(f" {zoom * 100:.0f}% ")
+
+    def _on_video_finished(self):
+        if self._slideshow_active:
+            self._next_image()
 
     def _navigate(self, index: int):
         if not self._image_list or index < 0 or index >= len(self._image_list):
@@ -274,7 +311,8 @@ class MainWindow(QMainWindow):
             self._slideshow_action.setText("슬라이드쇼 중지")
 
     def _slideshow_next(self):
-        self._next_image()
+        if not self._showing_video:
+            self._next_image()
 
     def _set_slideshow_interval(self):
         val, ok = QInputDialog.getInt(
@@ -297,7 +335,7 @@ class MainWindow(QMainWindow):
             self.showFullScreen()
 
     def _on_save_as(self):
-        if not self._current_path:
+        if not self._current_path or self._showing_video:
             return
         pixmap = self._canvas.current_pixmap()
         if pixmap.isNull():
@@ -310,6 +348,8 @@ class MainWindow(QMainWindow):
             pixmap.save(path)
 
     def _on_copy(self):
+        if self._showing_video:
+            return
         pixmap = self._canvas.current_pixmap()
         if not pixmap.isNull():
             QApplication.clipboard().setPixmap(pixmap)
@@ -327,6 +367,8 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             try:
                 path_to_delete = self._current_path
+                if self._showing_video:
+                    self._video.stop()
                 if self._current_index < len(self._image_list) - 1:
                     self._next_image()
                 elif self._current_index > 0:
@@ -350,7 +392,7 @@ class MainWindow(QMainWindow):
             self, f"{APP_NAME} 정보",
             f"<h2>{APP_NAME}</h2>"
             f"<p>버전 {VERSION}</p>"
-            f"<p>가볍고 빠른 이미지 뷰어</p>"
+            f"<p>가볍고 빠른 이미지/동영상 뷰어</p>"
             f"<p>Python + PySide6 (Qt)</p>"
         )
 
@@ -362,12 +404,12 @@ class MainWindow(QMainWindow):
         urls = event.mimeData().urls()
         if urls:
             path = urls[0].toLocalFile()
-            if os.path.isfile(path) and is_image_file(path):
+            if os.path.isfile(path) and is_media_file(path):
                 self._open_file(path)
             elif os.path.isdir(path):
-                images = list_images_in_dir(path)
-                if images:
-                    self._open_file(images[0])
+                media = list_media_in_dir(path)
+                if media:
+                    self._open_file(media[0])
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -377,11 +419,15 @@ class MainWindow(QMainWindow):
             if self._slideshow_active:
                 self._toggle_slideshow()
                 return
+        if event.key() == Qt.Key.Key_Space and self._showing_video:
+            self._video._toggle_play()
+            return
         super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent):
         self._save_state()
         self._thumb_panel.shutdown()
+        self._video.stop()
         if self._slideshow_active:
             self._slideshow_timer.stop()
         super().closeEvent(event)

@@ -14,12 +14,27 @@ SUPPORTED_EXTENSIONS = {
     ".psd", ".dds", ".tga", ".pcx",
 }
 
+VIDEO_EXTENSIONS = {
+    ".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv",
+    ".webm", ".m4v", ".3gp", ".mpg", ".mpeg", ".ts",
+}
+
+ALL_EXTENSIONS = SUPPORTED_EXTENSIONS | VIDEO_EXTENSIONS
+
+
+def is_media_file(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in ALL_EXTENSIONS
+
 
 def is_image_file(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS
 
 
-def list_images_in_dir(directory: str) -> list[str]:
+def is_video_file(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in VIDEO_EXTENSIONS
+
+
+def list_media_in_dir(directory: str) -> list[str]:
     try:
         entries = sorted(os.listdir(directory), key=str.lower)
     except OSError:
@@ -27,7 +42,7 @@ def list_images_in_dir(directory: str) -> list[str]:
     return [
         os.path.join(directory, e)
         for e in entries
-        if is_image_file(e) and os.path.isfile(os.path.join(directory, e))
+        if is_media_file(e) and os.path.isfile(os.path.join(directory, e))
     ]
 
 

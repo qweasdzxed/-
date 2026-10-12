@@ -20,6 +20,12 @@ class ImageCanvas(QGraphicsView):
         self._dragging = False
         self._drag_start = QPointF()
 
+        self._anim_frames: list[QPixmap] = []
+        self._anim_durations: list[int] = []
+        self._anim_index = 0
+        self._anim_timer = QTimer(self)
+        self._anim_timer.timeout.connect(self._on_anim_tick)
+
         self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
@@ -32,8 +38,12 @@ class ImageCanvas(QGraphicsView):
     def load_image(self, path: str) -> bool:
         self._stop_animation()
         lower = path.lower()
-        if lower.endswith(".gif"):
-            return self._load_animated(path)
+        if lower.endswith((".gif", ".webp", ".png", ".apng")):
+            if self._try_load_pillow_anim(path):
+                return True
+            if lower.endswith(".gif"):
+                if self._load_qmovie(path):
+                    return True
         img = QImage(path)
         if img.isNull():
             try:
@@ -54,7 +64,44 @@ class ImageCanvas(QGraphicsView):
             self.fit_in_view()
         return True
 
-    def _load_animated(self, path: str) -> bool:
+    def _try_load_pillow_anim(self, path: str) -> bool:
+        try:
+            from PIL import Image as PILImage
+            pil_img = PILImage.open(path)
+            n_frames = getattr(pil_img, "n_frames", 1)
+            if n_frames <= 1:
+                return False
+            frames = []
+            durations = []
+            for i in range(n_frames):
+                pil_img.seek(i)
+                frame = pil_img.convert("RGBA")
+                data = frame.tobytes("raw", "RGBA")
+                qimg = QImage(data, frame.width, frame.height, QImage.Format.Format_RGBA8888).copy()
+                frames.append(QPixmap.fromImage(qimg))
+                dur = pil_img.info.get("duration", 100)
+                durations.append(max(dur, 10))
+            self._anim_frames = frames
+            self._anim_durations = durations
+            self._anim_index = 0
+            first = self._anim_frames[0]
+            self._pixmap_item.setPixmap(first)
+            self._scene.setSceneRect(QRectF(first.rect()))
+            if self._fit_mode:
+                self.fit_in_view()
+            self._anim_timer.start(self._anim_durations[0])
+            return True
+        except Exception:
+            return False
+
+    def _on_anim_tick(self):
+        if not self._anim_frames:
+            return
+        self._anim_index = (self._anim_index + 1) % len(self._anim_frames)
+        self._pixmap_item.setPixmap(self._anim_frames[self._anim_index])
+        self._anim_timer.setInterval(self._anim_durations[self._anim_index])
+
+    def _load_qmovie(self, path: str) -> bool:
         self._movie = QMovie(path)
         if not self._movie.isValid():
             self._movie = None
@@ -74,6 +121,10 @@ class ImageCanvas(QGraphicsView):
             self._pixmap_item.setPixmap(self._movie.currentPixmap())
 
     def _stop_animation(self):
+        self._anim_timer.stop()
+        self._anim_frames.clear()
+        self._anim_durations.clear()
+        self._anim_index = 0
         if self._movie:
             self._movie.stop()
             self._movie.frameChanged.disconnect(self._on_frame_changed)
